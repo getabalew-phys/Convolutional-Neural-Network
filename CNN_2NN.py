@@ -36,13 +36,13 @@ class neuralnet:
         rng = np.random.RandomState(self.random_state)
         
         self.k_ = rng.normal(loc=0.0, scale=0.1, size=(self.F, self.Kh, self.Kw))
-        self.d_ = np.zeros(self.F)
+        self.d_ = np.zeros(self.F).ravel()
         
         self.w1 = rng.normal(loc=0.0, scale=0.1, size=(nodes, self.F*self.num_features))
-        self.b1 = np.zeros(nodes) 
+        self.b1 = np.zeros(nodes).ravel() 
         
         self.w2 = rng.normal(loc=0.0, scale=0.1, size=(num_classes, nodes))
-        self.b2 = np.zeros(num_classes) 
+        self.b2 = np.zeros(num_classes).ravel()
         
         
     def forward(self, X): 
@@ -50,23 +50,23 @@ class neuralnet:
         m, Nh, Nw = X.shape
         
         #convolutional layer
-        z0 = self.conv(X, self.k_, self.d_)
+        z0 = self.conv(X, self.k_, self.d_, mode='forward')
         a0 = self.ReLU(z0) 
-        h = a0.reshape(m, self.F*self.num_features)
+        h = a0.reshape(m, self.F*self.num_features) #flattenning to the fully connected layer
         
         #first layer
         z1 = np.dot(h, self.w1.T) + self.b1
-        a1 =  self.ReLU(z1)      #self.ReLU(z1)
+        a1 =  self.ReLU(z1)      
         
         #2nd layer 
         z2 = np.dot(a1, self.w2.T) + self.b2
-        a2 = self.softmax(z2)       #self.softmax(z2)
+        a2 = self.softmax(z2)       
         
         return a0, a1, a2
     
     def backward(self, X, y, a0, a1, a2): 
         
-        F, Kh, Kw = self.F, self.Kh, self.Kw
+        #shape of the initial data
         m, Nh, Nw = X.shape
         
         #making ready y for vectorized operations
@@ -75,17 +75,17 @@ class neuralnet:
         
         
         # putting forward E2 , dim = num_examples*num_classes
-        sig2 = a2*(1-a2)
-        E2 = (y - a2)*sig2
+        #sig2 = a2*(1-a2) for softmax
+        E2 = (y - a2)
         
         
         # do the same for E1, dim = num_examples*num_nodes
         sig1 = self.dReLU(a1) 
         E1 = np.dot(E2, self.w2)*sig1
         
-        #Now for E0, dim = num_examples*(num_featuers*num_F)
+        #Now for E0, dim = num_examples*(num_featuers*num_F) --> flattened to (num_examples, num_F, Nh, Nw)
         sig0 = self.dReLU(a0)
-        E0 = np.dot(E1, self.w1).reshape(m, F, Nh, Nw)*sig0
+        E0 = np.dot(E1, self.w1).reshape(m, self.F, Nh, Nw)*sig0
         
         
         # evaluating changes 
@@ -96,28 +96,19 @@ class neuralnet:
         db1 = np.sum(E1, axis=0)
         
         dk = self.conv(X, E0, d=0, mode="backward") 
-        #dd = np.sum(E0, axis=(0,2,3))
+        dd = np.sum(E0, axis=(0,2,3))
         
         
-        
-        
-        
-        
-        
-        
-        return dk, dw1, db1, dw2, db2
+        return dk, dd, dw1, db1, dw2, db2
         
     
     def padding(self, X, K, p="same", s=(1,1), mode="forward"): 
         
+        # size and shapes
         m, Nh, Nw = X.shape 
+        Kh, Kw =  self.Kh, self.Kw
         
-        #forward -> kernel shape, backward for Operator shape
-        if mode == "forward":
-            F, Kh, Kw = K.shape
-            
-        elif mode == "backward":
-            Km, F, Kh, Kw = K.shape 
+          
         
         #picking the padding type
         if type(p) == int: 
@@ -148,16 +139,14 @@ class neuralnet:
     
     def conv(self, X, K, d, p="same", s=(1,1), mode="forward"):
         
-        Xp = self.padding(X, K, p, s, mode) 
+        Xp = self.padding(X, self.k_, p, s, mode) 
         
+        #shape of the padded image, and size of kernel, and strides
         m, Nh, Nw = Xp.shape 
+        Kh, Kw =  self.Kh, self.Kw
         sh, sw = s
         
-        if mode == "forward":
-            F, Kh, Kw = K.shape
-        elif mode == "backward":
-            Km, F, Kh, Kw = K.shape 
-        
+     
         
         #output size
         Oh = (Nh - Kh)//sh + 1 
@@ -168,7 +157,7 @@ class neuralnet:
         strides = tuple(i*Xp.itemsize for i in strides)
         
         #strided matrix 
-        subM = np.lib.stride_tricks.as_strided(Xp, shape=(m, Oh, Ow, self.Kh, self.Kw), strides=strides)
+        subM = np.lib.stride_tricks.as_strided(Xp, shape=(m, Oh, Ow, Kh, Kw), strides=strides)
       
         #looking for the mode of the convolution
         if mode == "forward":
@@ -206,26 +195,41 @@ class neuralnet:
     
 
 
-Xtrain_std = Xtrain_std[:2000,:].reshape(2000, 28, 28) 
+Xtrain_std = Xtrain_std.reshape(Xtrain_std.shape[0], 28, 28) 
 Xvalid = Xvalid.reshape(Xvalid.shape[0], 28, 28)   
-model = neuralnet(Ksize=(6,5,5), num_features=28*28, num_classes=10, nodes=30) 
+model = neuralnet(Ksize=(10,3,3), num_features=28*28, num_classes=10, nodes=30) 
+
+
+def onehot(y, num_labels): 
+    
+    arr = np.zeros((y.shape[0], num_labels))
+    
+    for i, val in enumerate(y):
+        arr[i, val] = 1 
+    
+    return arr
 
 def minibatch(X, y, batchsize=100): 
     
-    for idx in range(0, X.shape[0], batchsize): 
+    indices = np.arange(0, X.shape[0], batchsize)
+    np.random.shuffle(indices)
+    
+    for idx in indices: 
         Xbatch = X[idx: idx + batchsize, :, :]
         ybatch = y[idx: idx + batchsize]
         
         yield Xbatch, ybatch
         
         
-def trainer(model, X, y, Xvalid, yvalid, batchsize=100, n_iter=50, eta=0.001): 
+def trainer(model, X, y, Xvalid, yvalid, batchsize=100, n_iter=15, eta=0.5): 
     n, Nh, Nw = X.shape
   
     loss = []
     acc = []
     Vacc = []
     Vloss = []
+    
+    yvalid_onehot = onehot(yvalid, 10)
     
     for epoch in range(n_iter): 
         
@@ -234,32 +238,72 @@ def trainer(model, X, y, Xvalid, yvalid, batchsize=100, n_iter=50, eta=0.001):
         for Xbatch, ybatch in minibatch(X, y, batchsize=100): 
             
             a0, a1, a2 = model.forward(Xbatch) 
-            dk, dw1, db1, dw2, db2 = model.backward(Xbatch, ybatch, a0, a1, a2)
+            dk, dd, dw1, db1, dw2, db2 = model.backward(Xbatch, ybatch, a0, a1, a2)
             
-            model.k_ += eta*dk 
-            model.w1 += eta*dw1
-            model.b2 += eta*db2
-            model.b1 += eta*db1
-            model.w2 += eta*dw2
+            #Updating
+            model.k_ += eta*dk/batchsize 
+            model.d_ += eta*dd/batchsize
+            model.w1 += eta*dw1/batchsize
+            model.b2 += eta*db2/batchsize
+            model.b1 += eta*db1/batchsize
+            model.w2 += eta*dw2/batchsize
            
             
+            ybatch_onehot = onehot(ybatch, 10)
             ypred = np.argmax(a2, axis=1)
+            lossE += np.mean((a2 - ybatch_onehot)**2)
             correctE += sum(ypred == ybatch)
-            lossE += np.sum((ypred - ybatch)**2)
             
-        loss.append(lossE/n)
+            
+        loss.append(lossE)
         acc.append(correctE/n)
         
         _, _, av2 = model.forward(Xvalid)
         yvalid_pred  = np.argmax(av2, axis=1)
         accVE = np.mean(yvalid_pred == yvalid) 
-        lossVE = np.mean((yvalid_pred - yvalid)**2) 
+        lossVE = np.mean((av2 - yvalid_onehot)**2) 
         
         Vacc.append(accVE)
         Vloss.append(lossVE)
         
-        print(f"{epoch + 1}|Train loss: {lossE/n: .3f} |Train acc: {correctE/n: .2f} |Valid loss: {lossVE: .3f} |Valid acc: {accVE: .2f} ")
+        print(f"{epoch + 1}|Tloss: {lossE/n: .3f} |Train acc: {correctE/n*100 : .2f}% |Vloss: {lossVE: .3f} |Valid acc: {accVE*100: .2f}% ")
     print("__________________________________________________________________________")
-    return acc, loss
+    return acc, loss, Vacc, Vloss
 
-trainer(model, Xtrain_std, ytrain, Xvalid, yvalid)
+accT, lossT, accV, lossV = trainer(model, Xtrain_std, ytrain, Xvalid, yvalid)
+
+
+fig = plt.figure(figsize=(8,8))
+
+ax1 = fig.add_subplot(2,2,1)
+ax1.plot(np.arange(0, len(accT)), accT, label="Train", marker="+")
+ax1.grid()
+ax1.set_xlabel("Epoch")
+ax1.set_ylabel("Accuracy")
+ax1.legend()
+
+ax2 = fig.add_subplot(2,2,2)
+ax2.plot(np.arange(0, len(accV)), accV, label="Valid", marker=".")
+ax2.grid()
+ax2.set_xlabel("Epoch")
+ax2.set_ylabel("Accuracy")
+ax2.legend()
+
+ax3 = fig.add_subplot(2,2,3)
+ax3.plot(np.arange(0, len(lossT)), lossT, label="Train")
+ax3.grid()
+ax3.set_xlabel("Epoch")
+ax3.set_ylabel("Loss")
+ax3.legend()
+
+ax4 = fig.add_subplot(2,2,4)
+ax4.plot(np.arange(0, len(lossV)), lossV, label="Valid")
+ax4.grid()
+ax4.set_xlabel("Epoch")
+ax4.set_ylabel("Loss")
+ax4.legend()
+
+plt.title("CNN Implementation")
+plt.tight_layout()
+plt.show()           
+
